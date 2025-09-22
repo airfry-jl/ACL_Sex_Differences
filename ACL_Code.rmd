@@ -1,0 +1,952 @@
+---
+title: "UCSF ACL: Sex Difference"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+options(java.parameters = c("-XX:+UseConcMarkSweepGC", "-Xmx16000m"))
+
+suppressMessages(
+  {
+    library(dplyr)
+    library(Seurat)
+    library(patchwork)
+    library(tibble)
+    library(DoubletFinder)
+    library(scCustomize)
+    library(monocle3)
+    library(SeuratWrappers)
+    library(ggplot2)
+    library(SeuratDisk)
+    library(xlsx)
+    library(loupeR)
+    library(ggVennDiagram)
+    library(stringr)
+    library(Seurat)
+    library(hdf5r)
+    library(loomR)
+    library(EnhancedVolcano)
+    library(SignacX)
+    library(glmGamPoi)
+    library(enrichR)
+  })
+```
+
+## Load Data
+
+```{r}
+obj_path <- "~/Desktop/UCSF/ACL/Objects/"
+acl_merge <- readRDS(paste0(obj_path,"ACLmerge.rds"))
+acl23m <- readRDS("~/Desktop/UCSF/CellRanger_Files/4.12.24/Objects/acl23m.rds")
+
+#acl23m@meta.data$Sample <- "23m"
+
+acl <- merge(acl_merge, y = acl23m, add.cell.ids = c("acl_merge", "acl23m"), project = "ACL")
+Idents(acl) <- "Sample"
+acl <- subset(acl, idents = c("0","1","2","22f","26f","29f","30f","26m","23m"))
+```
+
+## Downsample
+
+```{r}
+Idents(acl) <- "Gender"
+female <- subset(acl, idents = "Female")
+acl <- subset(acl, downsample = ncol(female))
+```
+
+## Integrate Data
+
+```{r}
+obj <- acl
+obj <- JoinLayers(obj)
+
+obj[["RNA"]] <- split(obj[["RNA"]], f = obj@meta.data$Sample)
+obj <- NormalizeData(obj)
+obj <- FindVariableFeatures(obj)
+obj <- ScaleData(obj)
+obj <- RunPCA(obj)
+
+obj <- IntegrateLayers(
+  object = obj, method = CCAIntegration,
+  verbose = FALSE, k.weight = 64,
+  orig.reduction = "pca", new.reduction = "integrated.cca"
+)
+
+obj <- FindNeighbors(obj, reduction = "integrated.cca", dims = 1:40)
+obj <- FindClusters(obj, resolution = 1, cluster.name = "cca_clusters", reduction = "integrated.cca")
+
+obj <- RunUMAP(obj, dims = 1:25, reduction = "integrated.cca")
+DimPlot(
+  obj,
+  combine = FALSE, label.size = 2, group.by = "Sample"
+)
+
+obj <- JoinLayers(obj)
+
+acl.integrated <- obj
+
+acl.integrated <- JoinLayers(acl.integrated)
+```
+
+## Cell Markers
+
+```{r}
+fibroblasts_markers <- c("DCN", "THY1","WNT1")
+tenocytes_markers <- c("SCX", "TNMD", "COL3A1","MKX")
+chondrocytes_markers <- c("PRG4","ACAN","COMP")
+endothelial_cells_markers <- c("CD34", "PECAM1")
+immune_cells_markers <- c("CD68", "CD163","MRC1")
+
+smooth_muscle_cells_markers <- c("ACTA2", "CNN1", "TAGLN")
+nerve_cells_markers <- c("NEFL", "NFASC", "TUBB3")
+adipocytes_markers <- c("PPARG", "FABP4", "ADIPOQ")
+osteoblasts_osteocytes_markers <- c("RUNX2", "BGLAP", "SOST")
+pericyte_markers <- c("ACTA2","RGS5")
+junction_markers <- c("PDGFRA","GJB6")
+
+progenitor_markers <- c("PDGFRA", "TPPP3", "PRG4", "ACAN","SCX","PIEZO2","ATF3","PTN")
+
+```
+
+## Test Markers
+
+```{r}
+
+DimPlot_scCustom(acl.integrated, pt.size = 1)
+
+FeaturePlot_scCustom(acl.integrated, features = c("ACTA2", "RGS5", "MCAM"), colors_use = c("cadetblue1","firebrick4"))
+
+FeaturePlot_scCustom(acl.integrated, features = c("PECAM1", "CD34"), colors_use = c("cadetblue1","firebrick4"))
+
+FeaturePlot_scCustom(acl.integrated, features = c("DCN", "COL1A2","LUM"), colors_use = c("cadetblue1","firebrick4"))
+
+FeaturePlot_scCustom(acl.integrated, features = c("MRC1", "PTPRC","CD3E"), colors_use = c("cadetblue1","firebrick4"))
+
+FeaturePlot_scCustom(acl.integrated,features = c("PDGFRA","TPPP3", "SCX","DCN","THY1","CD55","DPP4"), colors_use = c("cadetblue1","firebrick4"))
+
+
+FeaturePlot_scCustom(acl.integrated, features = c("PCNA","PCLAF"), colors_use = c("cadetblue1","firebrick4"))
+#acl.markers <- FindAllMarkers(acl.integrated, only.pos = T,min.pct = 0.25,logfc.threshold = 0.25)
+#acl.table <- acl.markers%>%
+  #group_by(cluster) %>%
+  #top_n(n=50,wt=avg_log2FC)
+
+#write.csv(acl.markers, "~/Desktop/question_marker.csv")
+
+```
+
+##Recluster
+
+```{r}
+Idents(acl.integrated) <- "cca_clusters"
+acl.integrated@meta.data$celltype <- acl.integrated@meta.data$cca_clusters
+
+
+levels(acl.integrated@meta.data$celltype) <-c("Macrophage", "Fibroblast", "Endothelial", "Endothelial", "Fibroblast", "Fibroblast", "Pericyte", "Pericyte", "Macrophage", "Pericyte", "Pericyte", "Macrophage", "Fibroblast", "Fibroblast", "T-Cell", "Pericyte", "Endothelial", "Macrophage", "Macrophage", "Fibroblast")
+
+Idents(acl.integrated) <- "celltype"
+#DefaultAssay(acl.integrated) <- "RNA"
+DimPlot_scCustom(acl.integrated,pt.size = 1, repel = T, figure_plot = T)
+
+```
+
+## Save Main RDS
+
+```{r}
+saveRDS(acl.integrated, paste0(obj_path,"ACLintegrated_new.rds"))
+
+#acl.loupe <- create_loupe_from_seurat(acl.integrated, output_name = "acl_new") ## create loupe file from seurat to analyze in Loupe Browser
+```
+
+## Read New
+
+```{r}
+obj_path <- "~/Desktop/UCSF/ACL/Objects/"
+acl.integrated <- readRDS(paste0(obj_path,"ACLintegrated_new.rds"))
+```
+
+## Fig 1B
+
+```{r}
+
+levels(acl.integrated) <- c("T-Cell", "Macrophage","Endothelial","Pericyte","Fibroblast")
+
+pdf('~/Desktop/UMAP.pdf', width = 8, height = 4.75)
+DimPlot_scCustom(acl.integrated, repel = TRUE,figure_plot = TRUE, colors_use = c("forestgreen","darkorchid","darkorange","firebrick3","deepskyblue2"), label = F)
+dev.off()
+
+#FeaturePlot_scCustom(acl.integrated,"PDGFRA",colors_use = c("cadetblue1","firebrick4"))
+
+```
+
+## Fig 1C/D
+
+```{r}
+#Fig 1C
+dot <- c("forestgreen","darkorchid","darkorange","firebrick3","deepskyblue2")
+ 
+features <- c('PDGFRA','TPPP3',"DCN","ACTA2","RGS5", "PECAM1",'CD34',"CD86", "MRC1", "PTPRC", "CD3E")
+Idents(acl.integrated) <- "celltype"
+levels(acl.integrated) <- c("T-Cell","Macrophage","Endothelial","Pericyte","Fibroblast")
+
+
+
+DotPlot_scCustom(acl.integrated,features = features,colors_use = c("lightgrey","lightgrey","red","red"), x_lab_rotate = TRUE) + theme(axis.text.y = element_text(colour = dot,face = "bold"), axis.text.x = element_text(face = "bold")) + 
+  theme(legend.title = element_text(face = "bold"),
+        legend.text=element_text(face="bold"),
+        axis.text = element_text(size = 20))
+
+all_markers <- FindAllMarkers(object = acl.integrated)
+top_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 20, named_vector = FALSE,
+    make_unique = TRUE)
+
+#Fig 1D
+levels(acl.integrated) <- c("Macrophage", "Fibroblast","Endothelial", "Pericyte","T-Cell")
+Clustered_DotPlot(seurat_object = acl.integrated, features = c('PDGFRA','TPPP3',"DCN","LUM",
+                                                              "ACTA2","RGS5","MCAM",
+                                                              "PECAM1",'CD34',"CDH5", "VWF",
+                                                              "CD86", 'CD68','CD163', 'MRC1', "PTPRC", 
+                                                              "CD3E","CD3D", "CD8A"), colors_use_idents = c("deepskyblue2",'firebrick2','darkorange','darkorchid','forestgreen'), colors_use_exp = PurpleAndYellow())
+
+levels(acl.integrated) <- c("Fibroblast", "Pericyte","Endothelial", "Macrophage","T-Cell")
+DoHeatmap(acl.integrated, features = top_markers, group.colors = c("deepskyblue2",'firebrick2','darkorange','darkorchid','forestgreen')) + scale_fill_gradientn(colors = c("#5d0187", "black", "yellow"))
+```
+## Fig 2A 
+
+```{r}
+levels(acl.integrated) <- c("T-Cell", "Macrophage","Endothelial","Pericyte","Fibroblast")
+Idents(acl.integrated) <- "celltype"
+Idents(acl.integrated) <- "Gender"
+male <- subset(acl.integrated, idents = "Male")
+female <- subset(acl.integrated, idents = "Female")
+Idents(male) <- "celltype"
+Idents(female) <- "celltype"
+
+levels(male) <- c("T-Cell", "Macrophage","Endothelial","Pericyte","Fibroblast")
+levels(female) <- c("T-Cell", "Macrophage","Endothelial","Pericyte","Fibroblast")
+p1 <- DimPlot_scCustom(male, repel = TRUE,figure_plot = TRUE, colors_use = c("forestgreen","darkorchid","darkorange","firebrick3","deepskyblue2"), label = F)
+p2 <- DimPlot_scCustom(female, repel = TRUE,figure_plot = TRUE, colors_use = c("forestgreen","darkorchid","darkorange","firebrick3","deepskyblue2"), label = F)
+
+p1 | p2
+```
+
+
+## Fig 2B
+
+```{r}
+Idents(acl.integrated) <- "celltype"
+pt <- table(Idents(acl.integrated), acl.integrated@meta.data$Gender, acl.integrated@meta.data$Sample)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+
+pt$Var1 <- factor(pt$Var1, c("Fibroblast","Pericyte","Endothelial","Macrophage","T-Cell"))
+
+write.csv(pt, "~/Desktop/acl_cell_percent.csv")
+
+my_theme <- list(theme(panel.border=element_blank(), 
+                      panel.grid.major=element_blank(),
+                      panel.grid.minor=element_blank()))
+
+
+stack <- c("deepskyblue2","firebrick3","darkorange","darkorchid","forestgreen")
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_classic() +
+  geom_col(position = "fill", width = 0.75,colour="black") +
+  theme() +
+  ylab("% Total Population") +
+  scale_fill_manual(values = stack) +
+  theme(legend.title = element_blank(), 
+        panel.grid = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(face = "bold", size = 20),
+        axis.text.y = element_text(face = "bold", size = 20),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(face = "bold", size = 20),
+        aspect.ratio = 3/1,
+        legend.text = element_text(face ="bold",size = 20)) +
+  scale_y_continuous(labels=scales::percent) +
+  coord_cartesian(ylim = c(0.045, .96))
+
+```
+
+## DE
+
+```{r}
+DefaultAssay(acl.integrated) <- "RNA"
+Idents(acl.integrated) <- "celltype"
+
+noimmune <- subset(acl.integrated,idents = c("Fibroblast","Endothelial","Pericyte"))
+Idents(noimmune) <- "Gender"
+no_immune_de <- FindMarkers(noimmune, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+no_immune_de <- rownames_to_column(no_immune_de, "Gene")
+head(no_immune_de)
+
+endo <- subset(acl.integrated,idents = "Endothelial")
+Idents(endo) <- "Gender"
+endo_de <- FindMarkers(endo, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+endo_de <- rownames_to_column(endo_de, "Gene")
+head(endo_de)
+
+fibro <- subset(acl.integrated,idents = "Fibroblast")
+Idents(fibro) <- "Gender"
+fibro_de <- FindMarkers(fibro, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+fibro_de <- rownames_to_column(fibro_de, "Gene")
+head(fibro_de)
+
+peri <- subset(acl.integrated,idents = "Pericyte")
+Idents(peri) <- "Gender"
+peri_de <- FindMarkers(peri, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+peri_de <- rownames_to_column(peri_de, "Gene")
+head(peri_de)
+
+immune <- subset(acl.integrated,idents = c("Macrophage","T-Cell"))
+Idents(immune) <- "Gender"
+immune_de <- FindMarkers(immune, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+immune_de <- rownames_to_column(immune_de, "Gene")
+head(immune_de)
+
+macro <- subset(acl.integrated,idents = "Macrophage")
+Idents(macro) <- "Gender"
+macro_de <- FindMarkers(macro, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+macro_de <- rownames_to_column(macro_de, "Gene")
+head(macro_de)
+
+tcell <- subset(acl.integrated,idents = "T-Cell")
+Idents(tcell) <- "Gender"
+tcell_de <- FindMarkers(tcell, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+tcell_de <- rownames_to_column(tcell_de, "Gene")
+head(tcell_de)
+
+acan <- subset(fibro, idents = "ACAN")
+Idents(acan) <- "Gender"
+acan_de <- FindMarkers(acan, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+acan_de <- rownames_to_column(acan_de, "Gene")
+head(acan_de)
+
+tppp3 <- subset(fibro, idents = "TPPP3")
+Idents(tppp3) <- "Gender"
+tppp3_de <- FindMarkers(tppp3, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+tppp3_de <- rownames_to_column(tppp3_de, "Gene")
+head(tppp3_de)
+
+notch3 <- subset(fibro, idents = "NOTCH3")
+Idents(notch3) <- "Gender"
+notch3_de <- FindMarkers(notch3, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+notch3_de <- rownames_to_column(notch3_de, "Gene")
+head(notch3_de)
+
+chi3l2 <- subset(fibro, idents = "CHI3L2")
+Idents(chi3l2) <- "Gender"
+chi3l2_de <- FindMarkers(chi3l2, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+chi3l2_de <- rownames_to_column(chi3l2_de, "Gene")
+head(chi3l2_de)
+
+cd55 <- subset(fibro, idents = "CD55")
+Idents(cd55) <- "Gender"
+cd55_de <- FindMarkers(cd55, ident.1 = "Male", ident.2 = "Female", min.pct = 0.1, logfc.threshold = 1)
+cd55_de <- rownames_to_column(cd55_de, "Gene")
+head(cd55_de)
+```
+
+## Make Workbook for DE
+```{r}
+wb = createWorkbook()
+
+sheet = createSheet(wb, "No Immune")
+addDataFrame(no_immune_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "Fibroblast")
+addDataFrame(fibro_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "Endothelial")
+addDataFrame(endo_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "Pericyte")
+addDataFrame(peri_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "Immune")
+addDataFrame(immune_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "Macrophage")
+addDataFrame(macro_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "T-Cell")
+addDataFrame(tcell_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "ACAN")
+addDataFrame(acan_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "TPPP3")
+addDataFrame(tppp3_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "CHI3L2")
+addDataFrame(chi3l2_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "NOTCH3")
+addDataFrame(notch3_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "CD55")
+addDataFrame(cd55_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+saveWorkbook(wb, "~/Desktop/ACL_DE_new.xlsx")
+```
+
+## Fibro DE
+```{r}
+Idents(fibro) <- "fib_cells"
+
+tppp3 <- subset(fibro,idents = c("TPPP3"))
+
+Idents(tppp3) <- "Gender"
+
+tppp3_de <- FindMarkers(tppp3, ident.1 = "Male", ident.2 = "Female")
+tppp3_de <- rownames_to_column(tppp3_de, "Gene")
+head(tppp3_de)
+
+
+wb = createWorkbook()
+
+sheet = createSheet(wb, "No Immune")
+addDataFrame(no_immune_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "Fibroblast")
+addDataFrame(fibro_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+sheet = createSheet(wb, "TPPP3")
+addDataFrame(tppp3_de, sheet=sheet, startColumn=1, row.names=FALSE)
+
+saveWorkbook(wb, "~/Desktop/FIG_ACL_DE.xlsx")
+
+```
+
+## Fig 2C
+```{r}
+no_immune <- subset(acl.integrated, idents = c("Fibroblast","Endothelial","Pericyte"))
+m_features <- c("TIMP1","CD74","CD9","CD151")
+f_features <- c("BMPR1A","MMP24",'MRTFA','DMTF1','SOX5','CDK14','SGCD','MYOCD','CD44')
+
+featuers <- c('MMP3','MMP1','CD74','CD9','CD40','CD14','CD99','CD68','CD93','CD164','CD34','MMP24','MMP14','MMP16','MMP11','MMP19','NTF3','STON1-GTF2A1L','GTF2IRD1','DMTF3','ITFG1','ITFG2AS1','MYOCD')
+
+VlnPlot_scCustom(no_immune,features = features, split.by = "Gender",pt.size = 0)
+
+Stacked_VlnPlot(no_immune,features = featuers, split.by = "Gender",pt.size = 0, colors_use = c("firebrick4", "cadetblue2"))
+
+
+Idents(no_immune) <- "celltype"
+levels(no_immune) <- c("Fibroblast", "Pericyte","Endothelial","Macrophage","T-Cell")
+Clustered_DotPlot(no_immune, features = featuers, colors_use_idents = c("deepskyblue2",'firebrick2','darkorange'), colors_use_exp = c("cadetblue2", "firebrick4"), group.by = "celltype",split.by = "Gender")
+
+
+peri <- subset(acl.integrated, idents = "Pericyte")
+endo <- subset(acl.integrated, idents = "Endothelial")
+Idents(fibro) <- "celltype"
+
+
+Stacked_VlnPlot(peri, features = c("CD248","NOTCH3","NRP1","CXCL12"), colors_use = c("cadetblue2", "firebrick4"), group.by = "Gender")
+Stacked_VlnPlot(endo, features = c("RASA1","STARD13","PTPRM","TSPAN9"), group.by = "Gender", colors_use = c("cadetblue1", "firebrick4"))
+
+
+#Fibro
+Stacked_VlnPlot(fibro, features = c("COL5A2","COL12A1","COL24A1","COL27A1"), colors_use = c("cadetblue2", "firebrick4"), group.by = "Gender")
+Stacked_VlnPlot(fibro, features = c("TIMP1","TIMP3","MMP3","MMP14"), colors_use = c("cadetblue2", "firebrick4"), group.by = "Gender")
+Stacked_VlnPlot(fibro, features = c("CD44","CD74","SOX5","ATF6"), colors_use = c("cadetblue2", "firebrick4"), group.by = "Gender")
+```
+
+## HETERO FIBRO
+
+```{r}
+fibro <- subset(acl.integrated, idents = "Fibroblast")
+
+fibro <- NormalizeData(fibro)
+fibro <- FindVariableFeatures(fibro)
+fibro <- ScaleData(fibro)
+fibro <- RunPCA(fibro)
+
+fibro <- FindNeighbors(fibro, reduction = "integrated.cca", dims = 1:40)
+fibro <- FindClusters(fibro, resolution = 1, cluster.name = "cca_clusters")
+
+fibro <- RunUMAP(fibro, reduction = "integrated.cca", dims = 1:25)
+DimPlot(
+  fibro,
+  combine = FALSE, label.size = 2
+)
+
+
+```
+
+```{r}
+DimPlot(fibro,  label = T)
+
+FeaturePlot_scCustom(fibro, features = c("PDGFRA","PRG4","CD55","SOX5","DPP4","NOTCH3","ACAN", "ATF3","CHI3L2","PIEZO2","TPPP3","NOTCH3","CD74", "ACTA2"), colors_use = c("cadetblue1","cadetblue1","firebrick4","firebrick4"))
+
+#FeaturePlot_scCustom(fibro, features = c("LAMA2","ATF3","TNNT1","GLI1","CD74","TNMD","MYL9", "CCN3"), colors_use = c("cadetblue1","firebrick4"))
+
+fibro.markers <- FindAllMarkers(fibro, only.pos = T,min.pct = 0.25,logfc.threshold = 0.25)
+fibro.table <- fibro.markers%>%
+  group_by(cluster) %>%
+  top_n(n=50,wt=avg_log2FC)
+
+
+```
+
+## FIBRO ReCluster
+
+```{r}
+
+fibro@meta.data$fib_cells <- fibro@meta.data$cca_clusters
+
+levels(fibro@meta.data$fib_cells) <- c("ACAN", "CHI3L2", "ACAN", "TPPP3", "NOTCH3", "CHI3L2", "TPPP3", "CD55", "TPPP3", "CD55", "ACAN", "CHI3L2")
+
+Idents(fibro) <- "fib_cells"
+
+DimPlot_scCustom(fibro, label = F, repel = T, pt.size = 1, colors_use = c("salmon1", "lightblue","lightgreen","lightpink","plum"),figure_plot = T)
+```
+
+## Save Fibro
+
+```{r}
+saveRDS(fibro, paste0(obj_path,"acl_fibro.rds"))
+create_loupe_from_seurat(fibro, output_name = "acl_fibro")
+```
+
+## Read New
+
+```{r}
+obj_path <- "~/Desktop/UCSF/ACL/Objects/"
+fibro <- readRDS(paste0(obj_path,"acl_fibro.rds"))
+```
+
+## Fig 3A
+
+```{r}
+pdf('~/Desktop/LPC_Cluster.pdf', width = 8, height = 4.75)
+DimPlot_scCustom(fibro, pt.size = 1.5, repel = TRUE,figure_plot = TRUE, label = F, colors_use = c("salmon1", "lightblue","lightgreen","lightpink","plum")) + NoLegend()
+dev.off()
+```
+
+## Fig 3B
+```{r}
+levels(fibro) <- c("TPPP3", "ACAN","CD55", "CHI3L2","NOTCH3")
+
+all_markers <- FindAllMarkers(object = fibro)
+top_markers <- Extract_Top_Markers(marker_dataframe = all_markers, num_genes = 20, named_vector = FALSE,
+    make_unique = TRUE)
+
+
+DoHeatmap(fibro, features = top_markers, group.colors = c("lightgreen","salmon1","plum","lightblue","lightpink")) + scale_fill_gradientn(colors = c("#5d0187", "black", "yellow"))
+
+```
+
+```{r}
+pdf('~/Desktop/Fibro_ACAN_v2.pdf', width = 12, height = 12)
+FeaturePlot_scCustom(fibro, features = c("ACAN","DPP4","PIEZO2","POSTN"), colors_use = c("cadetblue2","cadetblue2","firebrick4","firebrick4"),num_columns = 2, pt.size = 2)
+dev.off()
+
+pdf('~/Desktop/Fibro_CD55_v2.pdf', width = 12, height = 12)
+FeaturePlot_scCustom(fibro, features = c("CD55","PRG4", "SOX5", "MMP3"),colors_use = c("cadetblue2","cadetblue2","firebrick4","firebrick4"),num_columns = 2, pt.size = 2)
+dev.off()
+
+pdf('~/Desktop/Fibro_CHI3L2_v2.pdf', width = 12, height = 12)
+FeaturePlot_scCustom(fibro, features = c("CHI3L2","ATF3", "PPARG","CEBPB"),colors_use = c("cadetblue2","cadetblue2","firebrick4","firebrick4"),num_columns = 2, pt.size = 2)
+dev.off()
+
+pdf('~/Desktop/Fibro_TPPP3_v2.pdf', width = 12, height = 12)
+FeaturePlot_scCustom(fibro, features = c("TPPP3","LOXL2", "MFAP5","ENO1"),colors_use = c("cadetblue2","cadetblue2","firebrick4","firebrick4"),num_columns = 2, pt.size = 2)
+dev.off()
+
+pdf('~/Desktop/Fibro_NOTCH3_v2.pdf', width = 12, height = 12)
+FeaturePlot_scCustom(fibro, features = c("NOTCH3","NOTCH1", "COL15A1","COL4A1"),colors_use = c("cadetblue2","cadetblue2","firebrick4","firebrick4"),num_columns = 2, pt.size = 2)
+dev.off()
+```
+## PDGFRA+/ TPPP3+ Fibroblast
+
+```{r}
+Idents(fibro) <- "fib_cells"
+
+tppp3 <- subset(fibro,idents = c("TPPP3"))
+
+Idents(tppp3) <- "Gender"
+
+tppp3 <- NormalizeData(tppp3)
+tppp3 <- FindVariableFeatures(tppp3)
+tppp3 <- ScaleData(tppp3)
+tppp3 <- RunPCA(tppp3)
+
+tppp3 <- FindNeighbors(tppp3, reduction = "integrated.cca", dims = 1:40)
+tppp3 <- FindClusters(tppp3, resolution = 1, cluster.name = "cca_clusters")
+
+tppp3 <- RunUMAP(tppp3, reduction = "integrated.cca", dims = 1:25)
+DimPlot(
+  tppp3,
+  combine = FALSE, label.size = 2, split.by = "Gender"
+)
+
+
+FeaturePlot(tppp3,features = c("TPPP3","PDGFRA"), blend = T, blend.threshold = 0.1)
+
+
+```
+
+## Fig 5A
+```{r}
+Idents(fibro) <- "Gender"
+male_fib <- subset(fibro, idents = "Male")
+female_fib <- subset(fibro, idents = "Female")
+Idents(male_fib) <- "fib_cells"
+Idents(female_fib) <- "fib_cells"
+
+p1 <- DimPlot_scCustom(male_fib, repel = TRUE,figure_plot = TRUE, colors_use = c("salmon1", "lightblue","lightgreen","lightpink","plum"), label = F)
+p2 <- DimPlot_scCustom(female_fib, repel = TRUE,figure_plot = TRUE, colors_use = c("salmon1", "lightblue","lightgreen","lightpink","plum"), label = F)
+
+p1 | p2
+
+```
+
+## Fig 5B
+```{r}
+Idents(fibro) <- "fib_cells"
+pt <- table(Idents(fibro), fibro@meta.data$Gender, fibro@meta.data$Sample)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+
+pt$Var1 <- factor(pt$Var1, c("ACAN", "CHI3L2","TPPP3", "NOTCH3","CD55"))
+
+write.csv(pt, "~/Desktop/fibro_cell_percent.csv")
+
+my_theme <- list(theme(panel.border=element_blank(), 
+                      panel.grid.major=element_blank(),
+                      panel.grid.minor=element_blank()))
+
+
+stack <- c("salmon1", "lightblue","lightgreen","lightpink","plum")
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_classic() +
+  geom_col(position = "fill", width = 0.75,colour="black") +
+  theme() +
+  ylab("% Total Population") +
+  scale_fill_manual(values = stack) +
+  theme(legend.title = element_blank(), 
+        panel.grid = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(face = "bold", size = 20),
+        axis.text.y = element_text(face = "bold", size = 20),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(face = "bold", size = 20),
+        aspect.ratio = 3/1,
+        legend.text = element_text(face ="bold",size = 20)) +
+  scale_y_continuous(labels=scales::percent) +
+  coord_cartesian(ylim = c(0.045, .96))
+```
+## Fig 5C
+
+```{r}
+tppp3 <- subset(fibro, idents = "TPPP3")
+
+tppp3 <- NormalizeData(tppp3)
+tppp3 <- FindVariableFeatures(tppp3)
+tppp3 <- ScaleData(tppp3)
+tppp3 <- RunPCA(tppp3)
+
+tppp3 <- FindNeighbors(tppp3, reduction = "integrated.cca", dims = 1:40)
+tppp3 <- FindClusters(tppp3, resolution = 1, cluster.name = "cca_clusters")
+
+tppp3 <- RunUMAP(tppp3, reduction = "integrated.cca", dims = 1:25)
+DimPlot_scCustom(
+  tppp3, label.size = 2,figure_plot = T
+)
+
+Idents(tppp3) <- "Gender"
+m_tppp3 <- subset(tppp3, idents = "Male")
+f_tppp3 <- subset(tppp3, idents = "Female")
+
+Idents(tppp3) <- "cca_clusters"
+
+pdf('~/Desktop/TPPP3_Cluster.pdf', width = 8, height = 4.75)
+DimPlot_scCustom(tppp3, pt.size = 1.5,figure_plot = TRUE, label = F, split.by = "Gender") + NoLegend()
+dev.off()
+
+
+p1 <- DimPlot_scCustom(m_tppp3, repel = TRUE,figure_plot = TRUE, colors_use = c("turquoise2", "magenta","gold","springgreen3","orange","slateblue2"), label = F)
+p2 <- DimPlot_scCustom(f_tppp3, repel = TRUE,figure_plot = TRUE, colors_use = c("turquoise2", "magenta","gold","springgreen3","orange","slateblue2"), label = F)
+
+p1 | p2
+
+
+```
+
+## Fig 5D
+```{r}
+Idents(tppp3) <- "Gender"
+tppp3_de <- FindMarkers(tppp3, ident.1 = "Male", ident.2 = "Female")
+tppp3_de_sub <- filter(tppp3_de, avg_log2FC < 5)
+tppp3_de_sub <- filter(tppp3_de_sub, avg_log2FC > -5)
+
+featuers <- c("IFITM1","CRLF1","MGST1","CD44","IGF1R","ENOX1","IRF1","BMPR1A","TGFBR1","PTPRG","PTPRM","PTPRD","CD9","TENM4","EPB41L5","SOX5","MCC","EGFR", "WNT5B","HMGA2", "HOXD3","PRG4","PCOLCE2","COL5A1",'COL24A1','COL27A1','COL12A1', "ADAMTS14","EPAS1","CD74")
+
+p1 <- EnhancedVolcano(tppp3_de_sub,
+                rownames(tppp3_de_sub),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                selectLab = featuers,
+                xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 10e-9,
+    FCcutoff = 0.5,
+    pointSize = 0.5,
+    labSize = 3.0,
+    labCol = 'black',
+    labFace = 'bold',
+    col=c('gray20', 'gray20', 'gray20', 'red'),
+    boxedLabels = TRUE,
+    colAlpha = 4/5,
+    legendPosition = 'right',
+    legendLabSize = 14,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.5,
+    colConnectors = 'black',
+    title = "",
+    subtitle = "",
+    gridlines.major = FALSE,
+    gridlines.minor = FALSE)+ NoLegend()
+
+p1pdf("~/Desktop/Volcano.pdf", width = 8, height = 8)
+p1
+dev.off()
+
+```
+
+## Fig 4A (Fibro Monocle)
+
+```{r}
+cds <- as.cell_data_set(fibro)
+#cds <- reduce_dimension(cds, reduction_method = "UMAP")
+cds <- cluster_cells(cds, resolution = 1e-3)
+cds <- learn_graph(cds, use_partition = T)
+
+p1 <- plot_cells(cds, color_cells_by = "fib_cells", show_trajectory_graph = T)
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = T)
+wrap_plots(p1, p2)
+```
+
+```{r}
+#integrated.sub <- subset(as.Seurat(cds, assay = NULL), monocle3_partitions == 1)
+cds <- as.cell_data_set(integrated.sub)
+
+cds <- learn_graph(cds, use_partition = TRUE, verbose = FALSE)
+
+
+plot_cells(cds,
+           color_cells_by = "fib_cells",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE)
+
+cds <- order_cells(cds)
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "cluster",
+           label_cell_groups = TRUE,
+           label_groups_by_cluster=TRUE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60")
+
+pdf('~/Desktop/LPC_Trajectory.pdf', width = 8, height = 4.75)
+plot_cells(cds, color_cells_by = "fib_cells",
+           label_branch_points = FALSE,
+           label_leaves = FALSE,
+           label_groups_by_cluster = FALSE)
+dev.off()
+
+rowData(cds)$gene_name <- rownames(cds)
+rowData(cds)$gene_short_name <- rowData(cds)$gene_name
+
+lpc <- AddMetaData(object = lpc,metadata = cds@principal_graph_aux@listData$UMAP$pseudotime,col.name = "Pseudo")
+
+acl.integrated <- AddMetaData(object = acl.integrated,metadata = cds@principal_graph_aux@listData$UMAP$pseudotime,col.name = "progenitor")
+
+pdf('~/Desktop/LPC_Pseudo.pdf', width = 8, height = 4.75)
+FeaturePlot_scCustom(lpc, "Pseudo",pt.size = 1, colors_use = viridis_plasma_light_high)
+dev.off()
+
+FeaturePlot_scCustom(acl.integrated, "progenitor",pt.size = 1) & scale_color_viridis_c()
+
+```
+
+
+## scVelo File Prep
+
+```{r}
+fibro_V3 <- Convert_Assay(seurat_object = fibro, convert_to = "V3")
+fibro_V3 <- Replace_Suffix(fibro_V3,current_suffix = "-1", new_suffix = "x")
+
+table <- fibro_V3@meta.data
+
+table <- rownames_to_column(table, "Barcode")
+table$Barcode <- gsub("acl_merge_firstfive_","firstfive_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("23m_","feeleyb-23M_ACL_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_26f_","feeleyb-ACL26f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_22f_","feeleyb-ACL22f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_29f_","feeleyb-ACL29f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_30f_","feeleyb-ACL30f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_26m_","feeleyb-ACL26m_cellranger_velocyto:", table$Barcode)
+
+rownames(table) <- table[[1]]
+table[[1]] <- NULL
+
+fibro_V3@meta.data <- table
+
+head(fibro_V3@meta.data)
+
+SaveH5Seurat(fibro_V3, overwrite = T, filename = "fibro.h5seurat")
+Convert("fibro.h5seurat", dest = "h5ad")
+
+Idents(fibro) <- "Gender"
+male_fib <- subset(fibro, idents = "Male")
+
+male_fibro_V3 <- Convert_Assay(seurat_object = male_fib, convert_to = "V3")
+male_fibro_V3 <- Replace_Suffix(male_fibro_V3,current_suffix = "-1", new_suffix = "x")
+
+table <- male_fibro_V3@meta.data
+
+table <- rownames_to_column(table, "Barcode")
+table$Barcode <- gsub("acl_merge_firstfive_","firstfive_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("23m_","feeleyb-23M_ACL_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_26f_","feeleyb-ACL26f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_22f_","feeleyb-ACL22f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_29f_","feeleyb-ACL29f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_30f_","feeleyb-ACL30f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_26m_","feeleyb-ACL26m_cellranger_velocyto:", table$Barcode)
+
+rownames(table) <- table[[1]]
+table[[1]] <- NULL
+
+male_fibro_V3@meta.data <- table
+
+head(male_fibro_V3@meta.data)
+
+SaveH5Seurat(male_fibro_V3, overwrite = T, filename = "fibro_male.h5seurat")
+Convert("fibro_male.h5seurat", dest = "h5ad")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+female_fib <- subset(fibro, idents = "Female")
+
+female_fibro_V3 <- Convert_Assay(seurat_object = female_fib, convert_to = "V3")
+female_fibro_V3 <- Replace_Suffix(female_fibro_V3,current_suffix = "-1", new_suffix = "x")
+
+table <- female_fibro_V3@meta.data
+
+table <- rownames_to_column(table, "Barcode")
+table$Barcode <- gsub("acl_merge_firstfive_","firstfive_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("23m_","feeleyb-23M_ACL_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_26f_","feeleyb-ACL26f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_22f_","feeleyb-ACL22f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_29f_","feeleyb-ACL29f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_30f_","feeleyb-ACL30f_cellranger_velocyto:", table$Barcode)
+table$Barcode <- gsub("acl_merge_26m_","feeleyb-ACL26m_cellranger_velocyto:", table$Barcode)
+
+rownames(table) <- table[[1]]
+table[[1]] <- NULL
+
+female_fibro_V3@meta.data <- table
+
+head(female_fibro_V3@meta.data)
+
+SaveH5Seurat(female_fibro_V3, overwrite = T, filename = "fibro_female.h5seurat")
+Convert("fibro_female.h5seurat", dest = "h5ad")
+
+```
+
+## Enhanced Volcano
+```{r}
+Idents(acl.integrated) <- "Gender"
+#fibro.de <- FindMarkers(acl.integrated,
+                      #ident.1 = "Male",
+                     # ident.2 = "Female")
+tppp3_de_sub <- filter(tppp3_de, avg_log2FC < 5)
+tppp3_de_sub <- filter(tppp3_de_sub, avg_log2FC > -5)
+
+EnhancedVolcano(tppp3_de_sub,
+                rownames(tppp3_de_sub),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                selectLab = featuers,
+                xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 10e-10,
+    FCcutoff = 0.32,
+    pointSize = 0.5,
+    labSize = 3.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    colAlpha = 4/5,
+    legendPosition = 'right',
+    legendLabSize = 14,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.8,
+    colConnectors = 'black',
+    shape = c(1, 4, 23, 25)
+)
+
+EnhancedVolcano(tppp3_de_sub,
+                rownames(tppp3_de_sub),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                selectLab = c("TIMP1","CD74","CD9","CD151","BMPR1A","MMP24",'MRTFA','DMTF1','SOX5','CDK14','SGCD','MYOCD','CD44',"LOXL2"),
+                xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 10e-7,
+    FCcutoff = 0.32,
+    pointSize = 0.5,
+    labSize = 3.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    colAlpha = 4/5,
+    legendPosition = 'right',
+    legendLabSize = 14,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.8,
+    colConnectors = 'black',
+    shape = c(1, 4, 23, 25)
+)
+```        
+
+## Cell Numbers
+```{r}
+md <- acl.integrated@meta.data %>% data.table::as.data.table()
+# the resulting md object has one "row" per cell
+
+## count the number of cells per unique combinations of "Sample" and "seurat_clusters"
+table <- md[, .N, by = c("Sample","Gender")]
+
+write.csv(table,"acl_split.csv")
+
+
+tppp3_de_sub <- rownames_to_column(tppp3_de_sub)
+write.csv(tppp3_de_sub, "tppp3.csv")
+tppp3_markers <- FindAllMarkers(tppp3, min.pct = 0.1, logfc.threshold = 0.5)
+
+tppp3_markers <- rownames_to_column(tppp3_markers)
+write.csv(tppp3_markers, "~/Desktop/tppp3_markers.csv")
+```
+
